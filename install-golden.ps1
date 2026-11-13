@@ -75,6 +75,8 @@ Install-App 'VC++ Redistributable x64' 'VC_redist.x64.exe' '/install /quiet /nor
 
 Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norestart' 'Microsoft FSLogix Apps*'
 
+Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*'
+
 # --- next apps get added above this line ---
 
 Log "=== SUMMARY ==="

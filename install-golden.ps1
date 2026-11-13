@@ -95,6 +95,9 @@ Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norest
 Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*'
 Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer')
 
+Install-App 'Microsoft OneDrive' 'OneDriveSetup.exe' '/allusers /silent' 'Microsoft OneDrive*'
+Install-App 'Zoom' 'ZoomInstallerFull.exe' '/silent' 'Zoom*'
+
 # --- next apps get added above this line ---
 
 Log "=== SUMMARY ==="

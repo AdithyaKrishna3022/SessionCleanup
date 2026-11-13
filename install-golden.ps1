@@ -19,7 +19,23 @@ function Test-Installed($Like) {
   $k = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
   Get-ItemProperty $k -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName -like $Like } | Select-Object -First 1
+    Where-Object { $n = $_.DisplayName; $n -and (@($Like) | Where-Object { $n -like $_ }) } |
+    Select-Object -First 1
+}
+
+# Background job that closes popup windows with the given titles (same as clicking Close)
+function Start-PopupCloser($Titles) {
+  Start-Job -ArgumentList (,$Titles) -ScriptBlock {
+    param($t)
+    Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern IntPtr FindWindow(string c, string n); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);'
+    while ($true) {
+      foreach ($x in $t) {
+        $h = [W.U]::FindWindow($null, $x)
+        if ($h -ne [IntPtr]::Zero) { [W.U]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+      }
+      Start-Sleep -Seconds 2
+    }
+  }
 }
 
 function Get-InstallerFromS3($File) {
@@ -48,7 +64,7 @@ function Get-InstallerFromS3($File) {
   if (Test-Path $dest) { return $dest } else { return $null }
 }
 
-function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010)) {
+function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @()) {
   Log "=== $Name ==="
   $dest = Get-InstallerFromS3 $File
   if (-not $dest) {
@@ -57,7 +73,10 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010)) {
     return
   }
   Log "Downloaded: $dest ($([math]::Round((Get-Item $dest).Length/1MB,1)) MB)"
+  $job = $null
+  if ($ClosePopups.Count -gt 0) { $job = Start-PopupCloser $ClosePopups; Log "Popup closer running for: $($ClosePopups -join ', ')" }
   $p = Start-Process -FilePath $dest -ArgumentList $Switches -Wait -PassThru
+  if ($job) { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }
   $code = $p.ExitCode
   $ok = $OkCodes -contains $code
   Log "Exit code: $code  ->  $(if ($ok) {'OK'} else {'FAIL'})"
@@ -71,13 +90,10 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010)) {
 Log "Start. Log file: $Log"
 aws --version 2>&1 | ForEach-Object { Log $_ }
 
-Install-App 'VC++ Redistributable x64' 'VC_redist.x64.exe' '/install /quiet /norestart' 'Microsoft Visual C++ 2015*Redistributable (x64)*' @(0,3010,1638)
-
+Install-App 'VC++ Redistributable x64' 'VC_redist.x64.exe' '/install /quiet /norestart' @('Microsoft Visual C++ v14*Redistributable (x64)*','Microsoft Visual C++ 2015*Redistributable (x64)*') @(0,3010,1638)
 Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norestart' 'Microsoft FSLogix Apps*'
-
 Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*'
-
-Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*'
+Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer')
 
 # --- next apps get added above this line ---
 

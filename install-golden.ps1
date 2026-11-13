@@ -73,6 +73,8 @@ aws --version 2>&1 | ForEach-Object { Log $_ }
 
 Install-App 'VC++ Redistributable x64' 'VC_redist.x64.exe' '/install /quiet /norestart' 'Microsoft Visual C++ 2015*Redistributable (x64)*' @(0,3010,1638)
 
+Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norestart' 'Microsoft FSLogix Apps*'
+
 # --- next apps get added above this line ---
 
 Log "=== SUMMARY ==="

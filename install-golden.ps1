@@ -77,6 +77,8 @@ Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norest
 
 Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*'
 
+Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*'
+
 # --- next apps get added above this line ---
 
 Log "=== SUMMARY ==="

@@ -43,6 +43,22 @@ public class PopupUtil {
   [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public static System.Collections.Generic.List<string> TopWindows() {
+    var list = new System.Collections.Generic.List<string>();
+    EnumWindows(delegate(IntPtr h, IntPtr l) {
+      if (IsWindowVisible(h)) {
+        StringBuilder sb = new StringBuilder(256);
+        GetWindowText(h, sb, 256);
+        if (sb.Length > 0) { uint pid; GetWindowThreadProcessId(h, out pid); list.Add(h.ToInt64() + "|" + pid + "|" + sb.ToString()); }
+      }
+      return true;
+    }, IntPtr.Zero);
+    return list;
+  }
   public static bool ClickButton(IntPtr dlg, string caption) {
     IntPtr found = IntPtr.Zero;
     EnumChildWindows(dlg, delegate(IntPtr h, IntPtr l) {
@@ -59,13 +75,23 @@ public class PopupUtil {
 '@
     } catch { Add-Content $lf "Add-Type failed: $($_.Exception.Message)"; return }
     Add-Content $lf "$(Get-Date -Format HH:mm:ss) closer started, watching for: $($t -join ', ')"
+    $seen = @{}
     while ($true) {
-      foreach ($x in $t) {
-        $h = [PopupUtil]::FindWindow($null, $x)
-        if ($h -ne [IntPtr]::Zero) {
-          $clicked = [PopupUtil]::ClickButton($h, 'Close')
-          if (-not $clicked) { [PopupUtil]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
-          Add-Content $lf "$(Get-Date -Format HH:mm:ss) found '$x' window; clicked Close button: $clicked"
+      foreach ($w in [PopupUtil]::TopWindows()) {
+        $parts = $w -split '\|', 3
+        $hwnd  = [IntPtr][int64]$parts[0]
+        $title = $parts[2]
+        if (-not $seen.ContainsKey($w)) {
+          $seen[$w] = 1
+          $pn = (Get-Process -Id ([int]$parts[1]) -ErrorAction SilentlyContinue).Name
+          Add-Content $lf "$(Get-Date -Format HH:mm:ss) window seen: '$title' (process: $pn)"
+        }
+        foreach ($x in $t) {
+          if ($title -like "*$x*") {
+            $clicked = [PopupUtil]::ClickButton($hwnd, 'Close')
+            if (-not $clicked) { [PopupUtil]::PostMessage($hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+            Add-Content $lf "$(Get-Date -Format HH:mm:ss) MATCH '$title'; clicked Close button: $clicked"
+          }
         }
       }
       Start-Sleep -Seconds 2

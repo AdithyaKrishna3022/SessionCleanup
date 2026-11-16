@@ -156,7 +156,7 @@ function Get-InstallerFromS3($File) {
   if (Test-Path $dest) { return $dest } else { return $null }
 }
 
-function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @(), $KillAfter = @(), $FinishWindow = '') {
+function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @(), $KillAfter = @(), $FinishWindow = '', $AlsoWait = @(), $MaxMinutes = 20) {
   if ($Only) {
     $match = $false
     foreach ($o in ($Only -split ',')) { if ($Name -like "*$($o.Trim())*") { $match = $true } }
@@ -175,28 +175,36 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $C
 
   # Wait only for the installer process itself (not for apps it launches), max 20 minutes.
   # If the installer leaves a "completion" window open, close it once the install really looks done.
-  $p = Start-Process -FilePath $dest -ArgumentList $Switches -PassThru
+  $exe = $dest; $argList = $Switches
+  if ($dest -like '*.msi') { $exe = 'msiexec.exe'; $argList = "/i `"$dest`" $Switches" }   # MSI files run through msiexec
+  $p = Start-Process -FilePath $exe -ArgumentList $argList -PassThru
   $null = $p.Handle
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  $quiet = 0; $closedFinish = $false; $lastStatus = [datetime]::MinValue; $winSeen = $null
-  while (-not $p.HasExited -and $sw.Elapsed.TotalMinutes -lt 20) {
+  $quiet = 0; $nextTry = Get-Date; $lastStatus = [datetime]::MinValue; $winSeen = $null; $mainSeen = $null
+  while (-not $p.HasExited -and $sw.Elapsed.TotalMinutes -lt $MaxMinutes) {
     Start-Sleep -Seconds 3
-    if ($FinishWindow -and -not $closedFinish -and -not $p.HasExited) {
+    if ($FinishWindow -and -not $p.HasExited) {
       $hw     = Find-Win $FinishWindow
       $winUp  = ($hw -ne [IntPtr]::Zero)
       if ($winUp -and -not $winSeen) { $winSeen = Get-Date }
-      $regOk  = [bool](Test-Installed $RegName)
-      $msiN   = Get-ActiveMsiInstalls
-      $winAge = if ($winSeen) { ((Get-Date) - $winSeen).TotalSeconds } else { 0 }
-      if ($winUp -and $regOk -and $msiN -eq 0 -and $winAge -gt 60) { $quiet++ } else { $quiet = 0 }
+      $mainOk = [bool](Test-Installed $RegName)
+      if ($mainOk -and -not $mainSeen) { $mainSeen = Get-Date }
+      $bundleOk = $true
+      foreach ($a in $AlsoWait) { if (-not (Test-Installed $a)) { $bundleOk = $false } }
+      $msiN    = Get-ActiveMsiInstalls
+      $winAge  = if ($winSeen)  { ((Get-Date) - $winSeen).TotalSeconds }  else { 0 }
+      $mainAge = if ($mainSeen) { ((Get-Date) - $mainSeen).TotalSeconds } else { 0 }
+      # Ready = main app registered, bundled apps registered (or 7 minutes passed without them), nothing installing, window up
+      $ready = $winUp -and $mainOk -and ($msiN -eq 0) -and ($winAge -gt 60) -and ($bundleOk -or $mainAge -gt 420) -and ((Get-Date) -ge $nextTry)
+      if ($ready) { $quiet++ } else { $quiet = 0 }
       if (((Get-Date) - $lastStatus).TotalSeconds -ge 15) {
-        Log "waiting: window=$winUp registry=$regOk activeMsiInstalls=$msiN windowAge=$([int]$winAge)s quiet=$quiet/5"
+        Log "waiting: window=$winUp main=$mainOk bundled=$bundleOk activeMsi=$msiN windowAge=$([int]$winAge)s sinceMain=$([int]$mainAge)s quiet=$quiet/10"
         $lastStatus = Get-Date
       }
-      if ($quiet -ge 5 -or ($winUp -and $regOk -and $winAge -gt 600)) {
+      if ($quiet -ge 10) {
         Log "Install looks complete; closing the '$FinishWindow' window"
         Close-InstallerWindow $hw $p $FinishWindow
-        $closedFinish = $true
+        $quiet = 0; $nextTry = (Get-Date).AddSeconds(45)   # if it refused, try again later
       }
     }
   }
@@ -230,9 +238,15 @@ aws --version 2>&1 | ForEach-Object { Log $_ }
 Install-App 'VC++ Redistributable x64' 'VC_redist.x64.exe' '/install /quiet /norestart' @('Microsoft Visual C++ v14*Redistributable (x64)*','Microsoft Visual C++ 2015*Redistributable (x64)*') @(0,3010,1638)
 Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norestart' 'Microsoft FSLogix Apps*'
 Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*' @(0,3010) @() @('chrome')
-Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer') @('Acrobat','AcroCEF','AcroRd32') 'Adobe Acrobat Reader Installer'
 Install-App 'Microsoft OneDrive' 'OneDriveSetup.exe' '/allusers /silent' 'Microsoft OneDrive*' @(0,3010) @() @('OneDrive')
-Install-App 'Zoom' 'ZoomInstallerFull.exe' '/silent' 'Zoom*' @(0,3010) @() @('Zoom')
+# Zoom: the EXE (ZoomInstallerFull.exe) installs per user only, so we use the VDI host-app MSI (ZoomInstallerVDI.msi) from the S3 "Zoom/" folder.
+# (The "Zoom VDI Universal" plug-in MSI is for users' own devices, not for the image.)
+Install-App 'Zoom' 'ZoomInstallerVDI.msi' '/qn /norestart ALLUSERS=1' 'Zoom*' @(0,3010) @() @('Zoom')
+
+# Adobe Reader runs LAST so a problem here can't hold up the other apps.
+# Client-provided web installer: it installs Reader, then Adobe Express, then McAfee, then shows "Installation complete".
+# The script waits for Reader AND McAfee to be registered, then closes the completion window. Max 30 minutes.
+Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer') @('Acrobat','AcroCEF','AcroRd32') 'Adobe Acrobat Reader Installer' @('McAfee*') 30
 
 # --- next apps get added above this line ---
 

@@ -1,3 +1,5 @@
+param([string]$Only = '')   # e.g. -Only Zoom,OneDrive  (leave empty to run everything)
+
 $BucketName = 'iwd-aws-clickops-installers-and-executables'
 $Profile    = 'appstream_machine_role'
 $Dir        = 'C:\Temp\Installers'
@@ -23,7 +25,7 @@ function Test-Installed($Like) {
     Select-Object -First 1
 }
 
-# Background job that closes popup windows with the given titles (same as clicking Close)
+# Background job that closes popup windows with the given titles (did not work for Adobe's popup; parked)
 function Start-PopupCloser($Titles) {
   Start-Job -ArgumentList (,$Titles) -ScriptBlock {
     param($t)
@@ -64,7 +66,12 @@ function Get-InstallerFromS3($File) {
   if (Test-Path $dest) { return $dest } else { return $null }
 }
 
-function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @()) {
+function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @(), $KillAfter = @()) {
+  if ($Only) {
+    $match = $false
+    foreach ($o in ($Only -split ',')) { if ($Name -like "*$($o.Trim())*") { $match = $true } }
+    if (-not $match) { return }
+  }
   Log "=== $Name ==="
   $dest = Get-InstallerFromS3 $File
   if (-not $dest) {
@@ -75,11 +82,27 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $C
   Log "Downloaded: $dest ($([math]::Round((Get-Item $dest).Length/1MB,1)) MB)"
   $job = $null
   if ($ClosePopups.Count -gt 0) { $job = Start-PopupCloser $ClosePopups; Log "Popup closer running for: $($ClosePopups -join ', ')" }
-  $p = Start-Process -FilePath $dest -ArgumentList $Switches -Wait -PassThru
+
+  # Wait only for the installer process itself (not for apps it launches), max 20 minutes
+  $p = Start-Process -FilePath $dest -ArgumentList $Switches -PassThru
+  $null = $p.Handle
+  $finished = $p.WaitForExit(1200000)
   if ($job) { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }
+  if (-not $finished) {
+    Log "WARNING: installer still running after 20 minutes"
+    $script:Results += [pscustomobject]@{App=$Name; Exit='timeout'; Installer='FAIL'; Registry='-'}
+    return
+  }
   $code = $p.ExitCode
   $ok = $OkCodes -contains $code
   Log "Exit code: $code  ->  $(if ($ok) {'OK'} else {'FAIL'})"
+
+  # Close apps the installer launched on its own, then give the registry a moment to settle
+  Start-Sleep -Seconds 8
+  if ($KillAfter.Count -gt 0) {
+    $running = Get-Process -Name $KillAfter -ErrorAction SilentlyContinue
+    if ($running) { Log "Closing launched apps: $((($running | Select-Object -ExpandProperty Name -Unique)) -join ', ')"; $running | Stop-Process -Force -ErrorAction SilentlyContinue }
+  }
   $script:Results += [pscustomobject]@{
     App=$Name; Exit=$code
     Installer=$(if ($ok) {'OK'} else {'FAIL'})
@@ -87,16 +110,15 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $C
   }
 }
 
-Log "Start. Log file: $Log"
+Log "Start. Log file: $Log  Only='$Only'"
 aws --version 2>&1 | ForEach-Object { Log $_ }
 
 Install-App 'VC++ Redistributable x64' 'VC_redist.x64.exe' '/install /quiet /norestart' @('Microsoft Visual C++ v14*Redistributable (x64)*','Microsoft Visual C++ 2015*Redistributable (x64)*') @(0,3010,1638)
 Install-App 'FSLogix Apps agent' 'FSLogixAppsSetup.exe' '/install /quiet /norestart' 'Microsoft FSLogix Apps*'
-Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*'
-Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer')
-
-Install-App 'Microsoft OneDrive' 'OneDriveSetup.exe' '/allusers /silent' 'Microsoft OneDrive*'
-Install-App 'Zoom' 'ZoomInstallerFull.exe' '/silent' 'Zoom*'
+Install-App 'Google Chrome' 'ChromeSetup.exe' '/silent /install' 'Google Chrome*' @(0,3010) @() @('chrome')
+Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer') @('Acrobat','AcroCEF','AcroRd32')
+Install-App 'Microsoft OneDrive' 'OneDriveSetup.exe' '/allusers /silent' 'Microsoft OneDrive*' @(0,3010) @() @('OneDrive')
+Install-App 'Zoom' 'ZoomInstallerFull.exe' '/silent' 'Zoom*' @(0,3010) @() @('Zoom')
 
 # --- next apps get added above this line ---
 

@@ -281,4 +281,16 @@ Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_
 
 Log "=== SUMMARY ==="
 $Results | Format-Table -AutoSize | Out-String -Width 200 | ForEach-Object { Log $_ }
+$failed = @($Results | Where-Object { $_.Installer -ne 'OK' -or $_.Registry -ne 'FOUND' })
+if ($Only) {
+  Log "Partial run (-Only): skipping auto-cleanup."
+} elseif ($Results.Count -eq 0 -or $failed.Count -gt 0) {
+  Log "NOT cleaning up: at least one app failed or was not verified. Installers and logs are kept in C:\Temp for troubleshooting."
+} else {
+  Log "All apps installed and verified. Deleting the installers, the logs and this script."
+  cmd /c "rd /s /q \\?\$Dir" 2>$null | Out-Null
+  $self = $PSCommandPath
+  Start-Process cmd.exe -WindowStyle Hidden -ArgumentList "/c ping 127.0.0.1 -n 5 >nul & del /f /q `"$self`" & del /f /q C:\Temp\golden-install-*.log & del /f /q C:\Temp\popup-closer.log & rd C:\Temp"
+  Write-Host "Cleanup scheduled: C:\Temp will be empty in a few seconds. Take a photo of the SUMMARY above first."
+}
 Log "Done."

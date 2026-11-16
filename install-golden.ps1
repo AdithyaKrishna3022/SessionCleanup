@@ -130,6 +130,34 @@ function Close-InstallerWindow($hw, $p, $Title) {
   } catch { Log "SendKeys error: $($_.Exception.Message)" }
 }
 
+# Closes a browser tab opened by an installer (e.g. Adobe's welcome page).
+# Only acts when a Chrome/Edge window's title (= its active tab) matches a pattern, then presses Ctrl+W to close that tab.
+function Close-BrowserTabs($Patterns, $Seconds = 30) {
+  $ws = New-Object -ComObject WScript.Shell
+  $end = (Get-Date).AddSeconds($Seconds)
+  $closed = 0
+  while ((Get-Date) -lt $end -and $closed -lt 3) {
+    $hit = $null
+    foreach ($w in [PopupUtil]::TopWindows()) {
+      $parts = $w -split '\|', 3
+      $pn = (Get-Process -Id ([int]$parts[1]) -ErrorAction SilentlyContinue).Name
+      if (@('chrome','msedge','firefox','iexplore','brave','opera') -contains $pn) {
+        foreach ($pat in $Patterns) { if ($parts[2] -like $pat) { $hit = $parts[2] } }
+      }
+    }
+    if ($hit) {
+      if ($ws.AppActivate($hit)) {
+        Start-Sleep -Milliseconds 400
+        $ws.SendKeys('^w')
+        $closed++
+        Log "Closed browser tab: '$hit'"
+      }
+      Start-Sleep -Seconds 2
+    } else { Start-Sleep -Seconds 2 }
+  }
+  if ($closed -eq 0) { Log "No browser tab matching $($Patterns -join ', ') was found" }
+}
+
 function Get-InstallerFromS3($File) {
   # Download into a staging folder (S3 folder names can contain odd characters),
   # then copy the file to a clean path using .NET with the \\?\ prefix.
@@ -156,7 +184,7 @@ function Get-InstallerFromS3($File) {
   if (Test-Path $dest) { return $dest } else { return $null }
 }
 
-function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @(), $KillAfter = @(), $FinishWindow = '', $AlsoWait = @(), $MaxMinutes = 20) {
+function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $ClosePopups = @(), $KillAfter = @(), $FinishWindow = '', $AlsoWait = @(), $MaxMinutes = 20, $CloseBrowserTabs = @()) {
   if ($Only) {
     $match = $false
     foreach ($o in ($Only -split ',')) { if ($Name -like "*$($o.Trim())*") { $match = $true } }
@@ -225,6 +253,7 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $C
     $running = Get-Process -Name $KillAfter -ErrorAction SilentlyContinue
     if ($running) { Log "Closing launched apps: $((($running | Select-Object -ExpandProperty Name -Unique)) -join ', ')"; $running | Stop-Process -Force -ErrorAction SilentlyContinue }
   }
+  if ($CloseBrowserTabs.Count -gt 0) { Close-BrowserTabs $CloseBrowserTabs 30 }
   $script:Results += [pscustomobject]@{
     App=$Name; Exit=$code
     Installer=$(if ($ok) {'OK'} else {'FAIL'})
@@ -246,7 +275,7 @@ Install-App 'Zoom' 'ZoomInstallerVDI.msi' '/qn /norestart ALLUSERS=1' 'Zoom*' @(
 # Adobe Reader runs LAST so a problem here can't hold up the other apps.
 # Client-provided web installer: it installs Reader, then Adobe Express, then McAfee, then shows "Installation complete".
 # The script waits for Reader AND McAfee to be registered, then closes the completion window. Max 30 minutes.
-Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer') @('Acrobat','AcroCEF','AcroRd32') 'Adobe Acrobat Reader Installer' @('McAfee*') 30
+Install-App 'Adobe Acrobat Reader' 'Reader_en_install.exe' '/sAll /rs /msi EULA_ACCEPT=YES' 'Adobe Acrobat*' @(0,3010) @('Internet Explorer') @('Acrobat','AcroCEF','AcroRd32') 'Adobe Acrobat Reader Installer' @('McAfee*') 30 @('*Download Adobe*')
 
 # --- next apps get added above this line ---
 

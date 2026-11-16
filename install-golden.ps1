@@ -104,6 +104,32 @@ function Start-PopupCloser($Titles) {
   }
 }
 
+# Counts REAL installs in progress. The idle Windows Installer service (msiexec /V) is ignored.
+function Get-ActiveMsiInstalls {
+  @(Get-CimInstance Win32_Process -Filter "Name='msiexec.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match '\s[/-](i|x|f|p|package|uninstall|update)' }).Count
+}
+
+# Dismisses an installer's completion window: X button first, then the Finish button, then Enter.
+function Close-InstallerWindow($hw, $p, $Title) {
+  [PopupUtil]::PostMessage($hw, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+  Log "Sent close (X) to the window"
+  if ($p.WaitForExit(10000)) { return }
+  try {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($hw)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Finish')
+    $btn  = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    if ($btn) { $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); Log "Clicked Finish via UI Automation" }
+    else { Log "UI Automation: Finish button not found" }
+  } catch { Log "UI Automation error: $($_.Exception.Message)" }
+  if ($p.WaitForExit(10000)) { return }
+  try {
+    $ws = New-Object -ComObject WScript.Shell
+    if ($ws.AppActivate($Title)) { Start-Sleep -Milliseconds 500; $ws.SendKeys('{ENTER}'); Log "Sent Enter key to the window" }
+  } catch { Log "SendKeys error: $($_.Exception.Message)" }
+}
+
 function Get-InstallerFromS3($File) {
   # Download into a staging folder (S3 folder names can contain odd characters),
   # then copy the file to a clean path using .NET with the \\?\ prefix.
@@ -152,15 +178,24 @@ function Install-App($Name, $File, $Switches, $RegName, $OkCodes = @(0,3010), $C
   $p = Start-Process -FilePath $dest -ArgumentList $Switches -PassThru
   $null = $p.Handle
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  $quiet = 0; $closedFinish = $false
+  $quiet = 0; $closedFinish = $false; $lastStatus = [datetime]::MinValue; $winSeen = $null
   while (-not $p.HasExited -and $sw.Elapsed.TotalMinutes -lt 20) {
     Start-Sleep -Seconds 3
     if ($FinishWindow -and -not $closedFinish -and -not $p.HasExited) {
-      $hw = Find-Win $FinishWindow
-      if ($hw -ne [IntPtr]::Zero -and $sw.Elapsed.TotalSeconds -gt 45 -and -not (Get-Process msiexec -ErrorAction SilentlyContinue) -and (Test-Installed $RegName)) { $quiet++ } else { $quiet = 0 }
-      if ($quiet -ge 5) {
+      $hw     = Find-Win $FinishWindow
+      $winUp  = ($hw -ne [IntPtr]::Zero)
+      if ($winUp -and -not $winSeen) { $winSeen = Get-Date }
+      $regOk  = [bool](Test-Installed $RegName)
+      $msiN   = Get-ActiveMsiInstalls
+      $winAge = if ($winSeen) { ((Get-Date) - $winSeen).TotalSeconds } else { 0 }
+      if ($winUp -and $regOk -and $msiN -eq 0 -and $winAge -gt 60) { $quiet++ } else { $quiet = 0 }
+      if (((Get-Date) - $lastStatus).TotalSeconds -ge 15) {
+        Log "waiting: window=$winUp registry=$regOk activeMsiInstalls=$msiN windowAge=$([int]$winAge)s quiet=$quiet/5"
+        $lastStatus = Get-Date
+      }
+      if ($quiet -ge 5 -or ($winUp -and $regOk -and $winAge -gt 600)) {
         Log "Install looks complete; closing the '$FinishWindow' window"
-        [PopupUtil]::PostMessage($hw, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+        Close-InstallerWindow $hw $p $FinishWindow
         $closedFinish = $true
       }
     }

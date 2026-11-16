@@ -25,15 +25,48 @@ function Test-Installed($Like) {
     Select-Object -First 1
 }
 
-# Background job that closes popup windows with the given titles (did not work for Adobe's popup; parked)
+# Background job that finds popup windows by title and clicks their "Close" button.
+# Writes what it finds to C:\Temp\popup-closer.log so we can see if it works.
 function Start-PopupCloser($Titles) {
   Start-Job -ArgumentList (,$Titles) -ScriptBlock {
     param($t)
-    Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern IntPtr FindWindow(string c, string n); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);'
+    $lf = 'C:\Temp\popup-closer.log'
+    try {
+      Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class PopupUtil {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern IntPtr FindWindow(string c, string n);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);
+  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  public static bool ClickButton(IntPtr dlg, string caption) {
+    IntPtr found = IntPtr.Zero;
+    EnumChildWindows(dlg, delegate(IntPtr h, IntPtr l) {
+      StringBuilder sb = new StringBuilder(256);
+      SendMessage(h, 0x000D, (IntPtr)256, sb);   // WM_GETTEXT
+      if (sb.ToString().Replace("&","").Trim() == caption) { found = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    if (found == IntPtr.Zero) return false;
+    SendMessage(found, 0x00F5, IntPtr.Zero, IntPtr.Zero);  // BM_CLICK
+    return true;
+  }
+}
+'@
+    } catch { Add-Content $lf "Add-Type failed: $($_.Exception.Message)"; return }
+    Add-Content $lf "$(Get-Date -Format HH:mm:ss) closer started, watching for: $($t -join ', ')"
     while ($true) {
       foreach ($x in $t) {
-        $h = [W.U]::FindWindow($null, $x)
-        if ($h -ne [IntPtr]::Zero) { [W.U]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+        $h = [PopupUtil]::FindWindow($null, $x)
+        if ($h -ne [IntPtr]::Zero) {
+          $clicked = [PopupUtil]::ClickButton($h, 'Close')
+          if (-not $clicked) { [PopupUtil]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+          Add-Content $lf "$(Get-Date -Format HH:mm:ss) found '$x' window; clicked Close button: $clicked"
+        }
       }
       Start-Sleep -Seconds 2
     }

@@ -1,0 +1,1 @@
+$f = 'C:\Temp\install-golden.ps1'; New-Item -ItemType Directory C:\Temp -Force | Out-Null; aws s3 cp "s3://iwd-aws-clickops-installers-and-executables/Golden Image/Scripts/install-golden.ps1" $f --profile appstream_machine_role; if (Test-Path $f) { powershell -ExecutionPolicy Bypass -File $f }
